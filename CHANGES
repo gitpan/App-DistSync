@@ -1,6 +1,11 @@
-# $Id: CHANGES 2 2014-10-04 12:57:12Z abalama $
+# $Id: CHANGES 19 2014-10-18 16:56:35Z abalama $
 # Version/Revision history.
 
 1.00 Sat Oct  4 10:52:42 2014 GMT
+
     * Initial release
 
+1.01 Sat Oct 11 11:49:57 2014 MSD
+
+    * Documentation added
+    * Added support regexp in MANIFEST.SKIP files

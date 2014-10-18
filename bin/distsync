@@ -1,5 +1,5 @@
 #!/usr/bin/perl -w
-# $Id: distsync 12 2014-10-10 17:09:04Z abalama $
+# $Id: distsync 17 2014-10-11 07:51:58Z abalama $
 use strict;
 
 =head1 NAME
@@ -8,7 +8,7 @@ distsync - Launcher of synchronization via App::DistSync
 
 =head1 VERSION
 
-Version 1.00
+Version 1.01
 
 =head1 SYNOPSIS
 

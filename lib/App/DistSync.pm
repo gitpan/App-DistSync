@@ -1,4 +1,4 @@
-package App::DistSync; # $Id: DistSync.pm 15 2014-10-10 21:55:11Z abalama $
+package App::DistSync; # $Id: DistSync.pm 19 2014-10-18 16:56:35Z abalama $
 use strict;
 
 =head1 NAME
@@ -7,7 +7,7 @@ App::DistSync - Utility synchronization of the mirror distribution-sites
 
 =head1 VERSION
 
-Version 1.00
+Version 1.01
 
 =head1 SYNOPSIS
 
@@ -106,7 +106,7 @@ See C<TODO> file
 
 =head1 SEE ALSO
 
-C<perl>, L<LWP>
+C<perl>, L<LWP>, L<ExtUtils::Manifest>
 
 =head1 AUTHOR
 
@@ -133,7 +133,7 @@ See C<LICENSE> file
 =cut
 
 use vars qw/$VERSION/;
-$VERSION = '1.00';
+$VERSION = '1.01';
 
 use Carp;
 use File::Basename;
@@ -180,10 +180,28 @@ use constant {
             MIRRORS
             README
         /],
+    SKIPMODE    => 1,
     LIMIT       => '+1m', # '+1m' Limit gt and lt
     EXPIRE      => '+3d', # '+3d' For deleting
     FREEZE      => '+1d', # '+1d' For META test
-    
+    QRTYPES => {
+            ''  => sub { qr{$_[0]} },
+            x   => sub { qr{$_[0]}x },
+            i   => sub { qr{$_[0]}i },
+            s   => sub { qr{$_[0]}s },
+            m   => sub { qr{$_[0]}m },
+            ix  => sub { qr{$_[0]}ix },
+            sx  => sub { qr{$_[0]}sx },
+            mx  => sub { qr{$_[0]}mx },
+            si  => sub { qr{$_[0]}si },
+            mi  => sub { qr{$_[0]}mi },
+            ms  => sub { qr{$_[0]}sm },
+            six => sub { qr{$_[0]}six },
+            mix => sub { qr{$_[0]}mix },
+            msx => sub { qr{$_[0]}msx },
+            msi => sub { qr{$_[0]}msi },
+            msix => sub { qr{$_[0]}msix },
+    },    
 };
 
 our $DEBUG = 0;
@@ -226,7 +244,7 @@ sub new {
     
     # Read MANIFEST, MANIFEST.SKIP, MANIFEST.DEL files
     $props{manifest} = maniread($props{file_manifest});
-    $props{maniskip} = maniread($props{file_maniskip});
+    $props{maniskip} = maniread($props{file_maniskip}, SKIPMODE);
     $props{manidel}  = maniread($props{file_manidel});
     $props{mirrors}  = maniread($props{file_mirrors});
     
@@ -252,7 +270,39 @@ sub init { # Initialization
             "# baz.txt",
             "# 'spaced dir1/foo.txt'             any comment, for example blah-blah-blah",
             "# 'spaced dir1/foo.txt'             any comment, for example blah-blah-blah",
+            "# !!perl/regexp (?i-xsm:\\.bak\$)     avoid all bak files",
             "#",
+            "# See also MANIFEST.SKIP file of ExtUtils::Manifest v1.68 or later",
+            "#",
+            "",
+            "# Avoid version control files.",
+            "!!perl/regexp (?i-xsm:\\bRCS\\b)",
+            "!!perl/regexp (?i-xsm:\\bCVS\\b)",
+            "!!perl/regexp (?i-xsm:\\bSCCS\\b)",
+            "!!perl/regexp (?i-xsm:,v\$)",
+            "!!perl/regexp (?i-xsm:\\B\\.svn\\b)",
+            "!!perl/regexp (?i-xsm:\\B\\.git\\b)",
+            "!!perl/regexp (?i-xsm:\\B\\.gitignore\\b)",
+            "!!perl/regexp (?i-xsm:\\b_darcs\\b)",
+            "!!perl/regexp (?i-xsm:\\B\\.cvsignore\$)",
+            "",
+            "# Avoid temp and backup files.",
+            "!!perl/regexp (?i-xsm:~\$)",
+            "!!perl/regexp (?i-xsm:\\.(old|bak|tmp|rej)\$)",
+            "!!perl/regexp (?i-xsm:\\#\$)",
+            "!!perl/regexp (?i-xsm:\\b\\.#)",
+            "!!perl/regexp (?i-xsm:\\.#)",
+            "!!perl/regexp (?i-xsm:\\..*\\.sw.?\$)",
+            "",
+            "# Avoid prove files",
+            "!!perl/regexp (?i-xsm:\\B\\.prove\$)",
+            "",
+            "# Avoid MYMETA files",
+            "!!perl/regexp (?i-xsm:^MYMETA\\.)",
+            "",
+            "# Avoid Apache and building files",
+            "!!perl/regexp (?i-xsm:\\B\\.ht.+\$)",
+            "!!perl/regexp (?i-xsm:\\B\\.exists\$)",
             "\n",
             ), $stamp;
         close FILE;
@@ -324,7 +374,8 @@ sub sync { # Synchronization. Main proccess
     # Создаем список исключений на базе прочитанного ранее SKIP + системные файлы
     my @skip_keys = @{(SKIPFILES)};
     push @skip_keys, keys %{($self->{maniskip})} if ref($self->{maniskip}) eq 'HASH';
-    my %skips; for (@skip_keys) {$skips{$_} ? ($skips{$_}++) : ($skips{$_} = 1)}
+    my %skips; for (@skip_keys) {$skips{$_} = _qrreconstruct($_)}
+    #debug(Data::Dumper::Dumper(\%skips)) && return 0;
     
     # Удяляем файлы перечисленные в .DEL
     debug("Deleting of declared files");
@@ -346,7 +397,7 @@ sub sync { # Synchronization. Main proccess
     
         # Удаляем файлы физически, если они есть физически и их нет в SKIP файле!
         foreach my $k (keys %$dellist) {
-            if ($skips{$k}) { # Файл есть в списке исклюений
+            if (_skipcheck(\%skips, $k)) { # Файл есть в списке исклюений
                 debug(sprintf("> [SKIPPED] %s", $k));
             } else {
                 my $f = File::Spec->canonpath(File::Spec->catfile($self->{dir}, $k));
@@ -376,7 +427,7 @@ sub sync { # Synchronization. Main proccess
     
     # Добавляем в список исключений на базе прочитанного ранее SKIP - DEL файлы
     my @del_keys = keys %$dellist if ref($dellist) eq 'HASH';
-    for (@del_keys) {$skips{$_} ? ($skips{$_}++) : ($skips{$_} = 1)}
+    for (@del_keys) {$skips{$_} = _qrreconstruct($_)}
     
     ################
     # Синхронизация
@@ -493,7 +544,7 @@ sub sync { # Synchronization. Main proccess
                                     scalar(localtime($mt_r)),
                                 ));
                             # Скачиваем т.к. там свежее
-                            unless ($skips{$k}) {
+                            unless (_skipcheck(\%skips, $k)) {
                                 my $ar = $sync_list{$k} || [];
                                 push @$ar, {
                                     uri     => $url,
@@ -510,7 +561,7 @@ sub sync { # Synchronization. Main proccess
                     } elsif ($remote_manifest->{$k}) {
                         debug(sprintf("> [>] %s", $k));
                         # Скачиваем, т.к. у нас такого нет
-                        unless ($skips{$k}) {
+                        unless (_skipcheck(\%skips, $k)) {
                             my $ar = $sync_list{$k} || [];
                             push @$ar, {
                                 uri     => $url,
@@ -562,7 +613,7 @@ sub sync { # Synchronization. Main proccess
                 # Читаем файл в отдельную структуру
                 my $remote_manidel = maniread($self->{file_manitemp});
                 foreach my $k (keys %$remote_manidel) {
-                    unless ($skips{$k}) {
+                    unless (_skipcheck(\%skips, $k)) {
                         $delete_list{$k} ? ($delete_list{$k}++) : ($delete_list{$k} = 1)
                     }
                 }
@@ -696,8 +747,9 @@ sub sync { # Synchronization. Main proccess
     
     # Отбираем файлы исключая исключения
     foreach my $k (keys %$new_manifest) {
-        delete $new_manifest->{$k} if $skips{$k};
-        debug(sprintf("> [%s] %s", $skips{$k} ? "SKIPPED" : " ADDED ", $k));
+        my $nskip = _skipcheck(\%skips, $k);
+        delete $new_manifest->{$k} if $nskip;
+        debug(sprintf("> [%s] %s", $nskip ? "SKIPPED" : " ADDED ", $k));
     }
     #debug(Data::Dumper::Dumper($new_manifest));
     
@@ -798,6 +850,8 @@ sub write_yaml {
 sub maniread { # Reading data from MANEFEST, MIRRORS and MANEFEST.* files
     # Original see Ext::Utils::maniread
     my $mfile = shift;
+    my $skipflag = shift;
+    
     my $read = {};
     return $read unless defined($mfile) && (-e $mfile) && (-r $mfile) && (-s $mfile);
     local *M;
@@ -809,18 +863,30 @@ sub maniread { # Reading data from MANEFEST, MIRRORS and MANEFEST.* files
     while (<M>){
         chomp;
         next if /^\s*#/;
-
         my($file, $args);
-
-        # filename may contain spaces if enclosed in ''
-        # (in which case, \\ and \' are escapes)
-        if (($file, $args) = /^'(\\[\\']|.+)+'\s*(.*)/) {
-            $file =~ s/\\([\\'])/$1/g;
+        
+        if ($skipflag && $_ =~ /^\s*\!\!perl\/regexp\s*/i) { # Working in SkipMode
+            #s/\r//;
+            #$_ =~ qr{^\s*\!\!perl\/regexp\s*(?:(?:'([^\\']*(?:\\.[^\\']*)*)')|([^#\s]\S*))?(?:(?:\s*)|(?:\s+(.*?)\s*))$};
+            #$args = $3;
+            #my $file = $2;
+            #if ( defined($1) ) {
+            #    $file = $1;
+            #    $file =~ s/\\(['\\])/$1/g;
+            #}
+            unless (($file, $args) = /^'(\\[\\']|.+)+'\s*(.*)/) {
+                ($file, $args) = /^(^\s*\!\!perl\/regexp\s*\S+)\s*(.*)/;
+            }
         } else {
-            ($file, $args) = /^(\S+)\s*(.*)/;
+            # filename may contain spaces if enclosed in ''
+            # (in which case, \\ and \' are escapes)
+            if (($file, $args) = /^'(\\[\\']|.+)+'\s*(.*)/) {
+                $file =~ s/\\([\\'])/$1/g;
+            } else {
+                ($file, $args) = /^(\S+)\s*(.*)/;
+            }
         }
         next unless $file;
-
         $read->{$file} = [defined $args ? split(/\s+/,$args) : ""];
     }
     close M;
@@ -990,6 +1056,39 @@ sub _expire { # Перевод в expires
         return 0;
     }
     return $koef * $_map{ $d };
+}
+sub _qrreconstruct {
+    # Возвращает регулярное выражение (QR-строку)
+    # Функция позаимствованая из YAML::Type::regexp пакета YAML::Types, немного переделанная для 
+    # адаптации нужд!!
+    # На вход подается примерно следующее:
+    #    !!perl/regexp (?i-xsm:^\s*(error|fault|no))
+    # это является регуляркой вида:
+    #    qr/^\s*(error|fault|no)/i
+    my $node = shift;
+    return undef unless defined $node;
+    return $node unless $node =~ /^\s*\!\!perl\/regexp\s*/i;
+    $node =~ s/\s*\!\!perl\/regexp\s*//i;
+    return qr{$node} unless $node =~ /^\(\?([\^\-xism]*):(.*)\)\z/s;
+    my ($flags, $re) = ($1, $2);
+    $flags =~ s/-.*//;
+    $flags =~ s/^\^//;
+    my $sub = QRTYPES->{$flags} || sub { qr{$_[0]} };
+    return $sub->($re);
+}
+sub _skipcheck {
+    my $sl = shift; # Link to %skip
+    my $st = shift; # Test string
+    return 0 unless $sl && defined($st) && ref($sl) eq 'HASH';
+    return 1 if exists $sl->{$st} && defined $sl->{$st}; # Исключение нашли! Т.к. нашлось прямое соответствие
+    
+    # Пробегаемся по всем значениям и ищем среди них только регулярки
+    if (grep {(ref($_) eq 'Regexp') && $st =~ $_} values %$sl) {
+        $sl->{$st} = 1; # Для очередной проверки данные проверки будут уже излишними. Оптимизация производительности
+        return 1 
+    }
+
+    return 0; # Not Found
 }
 1;
 __END__
